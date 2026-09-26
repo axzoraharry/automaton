@@ -14,6 +14,14 @@
       "types": "./dist/config.d.ts",
       "default": "./dist/config.js"
     },
+    "./identity/provision.js": {
+      "types": "./dist/identity/provision.d.ts",
+      "default": "./dist/identity/provision.js"
+    },
+    "./identity/wallet.js": {
+      "types": "./dist/identity/wallet.d.ts",
+      "default": "./dist/identity/wallet.js"
+    },
     "./state/database.js": {
       "types": "./dist/state/database.d.ts",
       "default": "./dist/state/database.js"

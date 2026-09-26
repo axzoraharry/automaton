@@ -61,6 +61,9 @@ function saveConfig(apiKey: string, walletAddress: string): void {
  * 5. Create API key
  * 6. Save to config.json
  */
+/** SIWE nonces are single-use; never retry verify with the same payload. */
+const AUTH_HTTP_OPTS = { retries: 0 };
+
 export async function provision(
   apiUrl?: string,
   solanaIdentity?: ChainIdentity,
@@ -68,77 +71,100 @@ export async function provision(
   const url = apiUrl || process.env.CONWAY_API_URL || DEFAULT_API_URL;
 
   // 1. Load wallet
-  const { account, chainIdentity, chainType } = await getWallet();
+  const { account, chainIdentity } = await getWallet();
   const identity = solanaIdentity || chainIdentity;
   const address = identity.address;
   const isSolana = identity.chainType === "solana";
+  const protocol = isSolana ? "SIWS" : "SIWE";
 
-  // 2. Get nonce
-  const nonceResp = await httpClient.request(`${url}/v1/auth/nonce`, {
-    method: "POST",
-  });
-  if (!nonceResp.ok) {
+  let access_token: string | undefined;
+  let lastVerifyError = "";
+
+  // 2–4. Nonce + sign + verify (retry whole round on transient 5xx only)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const nonceResp = await httpClient.request(`${url}/v1/auth/nonce`, {
+      method: "POST",
+      ...AUTH_HTTP_OPTS,
+    });
+    if (!nonceResp.ok) {
+      throw new Error(
+        `Failed to get nonce: ${nonceResp.status} ${await nonceResp.text()}`,
+      );
+    }
+    const { nonce } = (await nonceResp.json()) as { nonce: string };
+
+    let messageString: string;
+    let signature: string;
+
+    if (isSolana) {
+      const siwsMsg = buildSiwsMessage({
+        domain: "conway.tech",
+        address,
+        statement: "Sign in to Conway as an Automaton to provision an API key.",
+        uri: `${url}/v1/auth/verify`,
+        nonce,
+        issuedAt: new Date().toISOString(),
+        chainId: "mainnet",
+      });
+      messageString = siwsMsg;
+      signature = await signSiwsMessage(siwsMsg, identity);
+    } else {
+      const siweMessage = new SiweMessage({
+        domain: "conway.tech",
+        address,
+        statement:
+          "Sign in to Conway as an Automaton to provision an API key.",
+        uri: `${url}/v1/auth/verify`,
+        version: "1",
+        chainId: 8453, // Base
+        nonce,
+        issuedAt: new Date().toISOString(),
+      });
+      messageString = siweMessage.prepareMessage();
+      signature = await account.signMessage({ message: messageString });
+    }
+
+    const verifyBody: Record<string, string> = { message: messageString, signature };
+    if (isSolana) {
+      verifyBody.chain_type = "solana";
+    }
+
+    const verifyResp = await httpClient.request(`${url}/v1/auth/verify`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(verifyBody),
+      ...AUTH_HTTP_OPTS,
+    });
+
+    if (verifyResp.ok) {
+      access_token = ((await verifyResp.json()) as { access_token: string })
+        .access_token;
+      break;
+    }
+
+    lastVerifyError = `${verifyResp.status}: ${await verifyResp.text()}`;
+    const retryable =
+      verifyResp.status === 500 ||
+      verifyResp.status === 502 ||
+      verifyResp.status === 503 ||
+      verifyResp.status === 504;
+    if (retryable && attempt < 2) {
+      continue;
+    }
+    const hint =
+      verifyResp.status === 500
+        ? " Conway auth may be temporarily unavailable; try again later or set CONWAY_API_KEY from the dashboard."
+        : "";
     throw new Error(
-      `Failed to get nonce: ${nonceResp.status} ${await nonceResp.text()}`,
+      `${protocol} verification failed: ${lastVerifyError}${hint}`,
     );
   }
-  const { nonce } = (await nonceResp.json()) as { nonce: string };
 
-  let messageString: string;
-  let signature: string;
-
-  if (isSolana) {
-    // 3a. SIWS path: Sign-In With Solana
-    const siwsMsg = buildSiwsMessage({
-      domain: "conway.tech",
-      address,
-      statement: "Sign in to Conway as an Automaton to provision an API key.",
-      uri: `${url}/v1/auth/verify`,
-      nonce,
-      issuedAt: new Date().toISOString(),
-      chainId: "mainnet",
-    });
-    messageString = siwsMsg;
-    signature = await signSiwsMessage(siwsMsg, identity);
-  } else {
-    // 3b. SIWE path: Sign-In With Ethereum (unchanged)
-    const siweMessage = new SiweMessage({
-      domain: "conway.tech",
-      address,
-      statement:
-        "Sign in to Conway as an Automaton to provision an API key.",
-      uri: `${url}/v1/auth/verify`,
-      version: "1",
-      chainId: 8453, // Base
-      nonce,
-      issuedAt: new Date().toISOString(),
-    });
-    messageString = siweMessage.prepareMessage();
-    signature = await account.signMessage({ message: messageString });
-  }
-
-  // 4. Verify signature -> get JWT
-  const verifyBody: Record<string, string> = { message: messageString, signature };
-  if (isSolana) {
-    verifyBody.chain_type = "solana";
-  }
-
-  const verifyResp = await httpClient.request(`${url}/v1/auth/verify`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(verifyBody),
-  });
-
-  if (!verifyResp.ok) {
-    const protocol = isSolana ? "SIWS" : "SIWE";
+  if (!access_token) {
     throw new Error(
-      `${protocol} verification failed: ${verifyResp.status} ${await verifyResp.text()}`,
+      `${protocol} verification failed: ${lastVerifyError || "unknown error"}`,
     );
   }
-
-  const { access_token } = (await verifyResp.json()) as {
-    access_token: string;
-  };
 
   // 5. Create API key
   const keyResp = await httpClient.request(`${url}/v1/auth/api-keys`, {

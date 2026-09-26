@@ -13,8 +13,38 @@ declare module "@conway/automaton/config.js" {
     socialRelayUrl?: string;
   }
 
+  export type AutomatonConfig = AutomatonCliConfig;
+
   export function loadConfig(): AutomatonCliConfig | null;
+  export function saveConfig(config: AutomatonCliConfig): void;
+  export function createConfig(params: {
+    name: string;
+    genesisPrompt: string;
+    creatorMessage?: string;
+    creatorAddress: string;
+    registeredWithConway: boolean;
+    sandboxId: string;
+    walletAddress: string;
+    apiKey: string;
+    openaiApiKey?: string;
+    anthropicApiKey?: string;
+    ollamaBaseUrl?: string;
+    parentAddress?: string;
+    chainType?: string;
+  }): AutomatonCliConfig;
   export function resolvePath(p: string): string;
+}
+
+declare module "@conway/automaton/identity/provision.js" {
+  export function loadApiKeyFromConfig(): string | null;
+}
+
+declare module "@conway/automaton/identity/wallet.js" {
+  export function getWallet(
+    chainType?: string,
+  ): Promise<{
+    chainIdentity: { address: string; chainType: string };
+  }>;
 }
 
 declare module "@conway/automaton/state/database.js" {
