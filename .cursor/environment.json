@@ -1,0 +1,5 @@
+{
+  "name": "Conway Automaton",
+  "install": "bash .cursor/cloud-agent-install.sh",
+  "start": "bash .cursor/cloud-agent-start.sh"
+}
