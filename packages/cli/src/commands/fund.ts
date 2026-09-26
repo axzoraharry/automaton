@@ -4,7 +4,10 @@
  * Transfer Conway credits using the configured Conway API key.
  */
 
-import { loadConfig } from "@conway/automaton/config.js";
+import { createConfig, loadConfig, saveConfig } from "@conway/automaton/config.js";
+import { loadApiKeyFromConfig } from "@conway/automaton/identity/provision.js";
+import { getWallet } from "@conway/automaton/identity/wallet.js";
+import type { AutomatonConfig } from "@conway/automaton/config.js";
 
 const args = process.argv.slice(3);
 const amount = args[0];
@@ -19,14 +22,16 @@ if (!amount) {
   process.exit(1);
 }
 
-const config = loadConfig();
+const config = await resolveFundingConfig();
 if (!config) {
   console.log("No automaton configuration found.");
+  console.log("Run: node dist/index.js --init && node dist/index.js --provision");
+  console.log("Or set CONWAY_API_KEY with ~/.automaton/wallet.json present.");
   process.exit(1);
 }
 
 if (!config.conwayApiKey) {
-  console.log("No Conway API key found in automaton config.");
+  console.log("No Conway API key found. Run --provision or set CONWAY_API_KEY.");
   process.exit(1);
 }
 
@@ -110,4 +115,45 @@ function parseAmountToCents(raw: string): number {
 function maskKey(key: string): string {
   if (key.length < 8) return "***";
   return `${key.slice(0, 4)}...${key.slice(-4)}`;
+}
+
+async function resolveFundingConfig(): Promise<AutomatonConfig | null> {
+  let config = loadConfig();
+  const apiKey =
+    process.env.CONWAY_API_KEY ||
+    config?.conwayApiKey ||
+    loadApiKeyFromConfig() ||
+    "";
+
+  if (config) {
+    if (!config.conwayApiKey && apiKey) {
+      config = { ...config, conwayApiKey: apiKey };
+    }
+    if (config.conwayApiKey && config.walletAddress) {
+      return config;
+    }
+  }
+
+  if (!apiKey) {
+    return config;
+  }
+
+  const { chainIdentity } = await getWallet();
+  const walletAddress = config?.walletAddress || chainIdentity.address;
+
+  if (!config) {
+    config = createConfig({
+      name: "automaton",
+      genesisPrompt: "Funded via automaton-cli.",
+      creatorAddress: walletAddress,
+      registeredWithConway: false,
+      sandboxId: "",
+      walletAddress,
+      apiKey,
+    });
+    saveConfig(config);
+    return config;
+  }
+
+  return { ...config, conwayApiKey: apiKey, walletAddress };
 }
