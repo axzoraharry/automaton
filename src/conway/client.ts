@@ -33,10 +33,12 @@ interface ConwayClientOptions {
   apiUrl: string;
   apiKey: string;
   sandboxId: string;
+  /** Skip Conway credit/API calls; local exec + BYOK inference only. */
+  localInferenceOnly?: boolean;
 }
 
 export function createConwayClient(options: ConwayClientOptions): ConwayClient {
-  const { apiUrl, apiKey } = options;
+  const { apiUrl, apiKey, localInferenceOnly = false } = options;
   // Normalize sandbox ID defensively so values like whitespace/"undefined"/"null"
   // never produce malformed API paths such as /v1/sandboxes//exec.
   const sandboxId = normalizeSandboxId(options.sandboxId);
@@ -294,6 +296,10 @@ export function createConwayClient(options: ConwayClientOptions): ConwayClient {
   // ─── Credits ─────────────────────────────────────────────────
 
   const getCreditsBalance = async (): Promise<number> => {
+    if (localInferenceOnly) {
+      // BYOK / Ollama mode: Conway billing is not used.
+      return 1_000_000;
+    }
     const result = await request("GET", "/v1/credits/balance");
     return result.balance_cents ?? result.credits_cents ?? 0;
   };

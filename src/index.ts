@@ -73,6 +73,8 @@ Usage:
 Environment:
   CONWAY_API_URL           Conway API URL (default: https://api.conway.tech)
   CONWAY_API_KEY           Conway API key (overrides config)
+  OPENAI_API_KEY           OpenAI key (run without Conway when set)
+  ANTHROPIC_API_KEY        Anthropic key (run without Conway when set)
   OLLAMA_BASE_URL          Ollama base URL (overrides config, e.g. http://localhost:11434)
 `);
     process.exit(0);
@@ -200,13 +202,32 @@ async function run(): Promise<void> {
   // Load wallet (chain-aware)
   const { account, chainIdentity, chainType: walletChainType } = await getWallet();
   const resolvedChainType = config.chainType || walletChainType || "evm";
-  const apiKey =
+  const {
+    hasExternalInferenceProvider,
+    resolveOpenAiApiKey,
+    resolveAnthropicApiKey,
+    resolveOllamaBaseUrl,
+  } = await import("./inference/providers.js");
+  const conwayApiKey =
     process.env.CONWAY_API_KEY ||
     config.conwayApiKey ||
-    loadApiKeyFromConfig();
-  if (!apiKey) {
-    logger.error("No API key found. Run: automaton --provision");
+    loadApiKeyFromConfig() ||
+    "";
+  const localInferenceOnly =
+    !conwayApiKey && hasExternalInferenceProvider(config);
+  if (!conwayApiKey && !localInferenceOnly) {
+    logger.error(
+      "No Conway API key and no alternate inference provider. " +
+        "Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or OLLAMA_BASE_URL " +
+        "(or run: automaton --provision).",
+    );
     process.exit(1);
+  }
+  const apiKey = conwayApiKey || "local-inference-only";
+  if (localInferenceOnly) {
+    logger.info(
+      `[${new Date().toISOString()}] Local inference mode (Conway API not used).`,
+    );
   }
 
   // Initialize database
@@ -250,11 +271,12 @@ async function run(): Promise<void> {
     apiUrl: config.conwayApiUrl,
     apiKey,
     sandboxId: config.sandboxId,
+    localInferenceOnly,
   });
 
   // Register automaton identity (one-time, immutable)
   const registrationState = db.getIdentity("conwayRegistrationStatus");
-  if (registrationState !== "registered") {
+  if (!localInferenceOnly && registrationState !== "registered") {
     try {
       const genesisPromptHash = config.genesisPrompt
         ? keccak256(toHex(config.genesisPrompt))
@@ -284,8 +306,7 @@ async function run(): Promise<void> {
     }
   }
 
-  // Resolve Ollama base URL: env var takes precedence over config
-  const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || config.ollamaBaseUrl;
+  const ollamaBaseUrl = resolveOllamaBaseUrl(config);
 
   // Create inference client — pass a live registry lookup so model names like
   // "gpt-oss:120b" route to Ollama based on their registered provider, not heuristics.
@@ -297,8 +318,8 @@ async function run(): Promise<void> {
     defaultModel: config.inferenceModel,
     maxTokens: config.maxTokensPerTurn,
     lowComputeModel: config.modelStrategy?.lowComputeModel || "gpt-5-mini",
-    openaiApiKey: config.openaiApiKey,
-    anthropicApiKey: config.anthropicApiKey,
+    openaiApiKey: resolveOpenAiApiKey(config),
+    anthropicApiKey: resolveAnthropicApiKey(config),
     ollamaBaseUrl,
     getModelProvider: (modelId) => modelRegistry.get(modelId)?.provider,
   });
